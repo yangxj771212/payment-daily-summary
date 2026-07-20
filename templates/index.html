@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>缴费日期会计汇总</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="eyebrow">EXCEL 自动汇总</div>
+      <h1>缴费日期会计汇总</h1>
+      <p>上传缴费明细，系统自动按日计算银行存款、预收报名费、转收入、不含税收入与税额。</p>
+    </section>
+
+    <section class="card">
+      <div id="dropzone" class="dropzone" tabindex="0">
+        <div class="icon">⇧</div>
+        <h2>拖入 Excel 文件</h2>
+        <p>支持 .xls、.xlsx、.xlsm，最大 20MB</p>
+        <button id="chooseBtn" class="secondary" type="button">选择文件</button>
+        <input id="fileInput" type="file" accept=".xls,.xlsx,.xlsm" hidden>
+      </div>
+
+      <div id="fileBar" class="filebar hidden">
+        <div>
+          <span class="file-label">已选择</span>
+          <strong id="fileName"></strong>
+        </div>
+        <button id="clearBtn" class="text-button" type="button">更换文件</button>
+      </div>
+
+      <button id="processBtn" class="primary" type="button" disabled>
+        <span class="button-text">生成并下载汇总表</span>
+        <span class="spinner hidden"></span>
+      </button>
+      <div id="message" class="message hidden" role="alert"></div>
+    </section>
+
+    <section class="rules">
+      <h2>固定计算规则</h2>
+      <div class="rule-grid">
+        <article><span>银行存款</span><p>每日实缴金额合计</p></article>
+        <article><span>预收报名费</span><p>“预缴费”类别的每日实缴金额</p></article>
+        <article><span>预收报名费转收入</span><p>每日预缴金额合计</p></article>
+        <article><span>收入</span><p>（银行存款－预收报名费＋转收入）÷ 1.03</p></article>
+        <article><span>税</span><p>收入 × 3%</p></article>
+      </div>
+      <p class="required">表格必须包含：缴费日期、业务类别、预缴金额、实缴金额。</p>
+    </section>
+  </main>
+
+  <script>
+    const input = document.getElementById('fileInput');
+    const dropzone = document.getElementById('dropzone');
+    const chooseBtn = document.getElementById('chooseBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const processBtn = document.getElementById('processBtn');
+    const fileBar = document.getElementById('fileBar');
+    const fileName = document.getElementById('fileName');
+    const message = document.getElementById('message');
+    let selectedFile = null;
+
+    function setFile(file) {
+      selectedFile = file || null;
+      processBtn.disabled = !selectedFile;
+      dropzone.classList.toggle('hidden', !!selectedFile);
+      fileBar.classList.toggle('hidden', !selectedFile);
+      fileName.textContent = selectedFile ? selectedFile.name : '';
+      message.classList.add('hidden');
+    }
+
+    chooseBtn.addEventListener('click', () => input.click());
+    clearBtn.addEventListener('click', () => { input.value = ''; setFile(null); });
+    input.addEventListener('change', () => setFile(input.files[0]));
+    ['dragenter', 'dragover'].forEach(type => dropzone.addEventListener(type, e => {
+      e.preventDefault(); dropzone.classList.add('dragging');
+    }));
+    ['dragleave', 'drop'].forEach(type => dropzone.addEventListener(type, e => {
+      e.preventDefault(); dropzone.classList.remove('dragging');
+    }));
+    dropzone.addEventListener('drop', e => setFile(e.dataTransfer.files[0]));
+    dropzone.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') input.click(); });
+
+    processBtn.addEventListener('click', async () => {
+      if (!selectedFile) return;
+      processBtn.disabled = true;
+      processBtn.classList.add('loading');
+      message.classList.add('hidden');
+      const body = new FormData();
+      body.append('file', selectedFile);
+      try {
+        const response = await fetch('/api/process', { method: 'POST', body });
+        if (!response.ok) {
+          const info = await response.json().catch(() => ({}));
+          throw new Error(info.error || '生成失败，请检查文件。');
+        }
+        const blob = await response.blob();
+        const disposition = response.headers.get('content-disposition') || '';
+        const utf8Name = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+        const downloadName = utf8Name ? decodeURIComponent(utf8Name[1]) : '缴费日期会计汇总.xlsx';
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = downloadName; document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(url);
+        message.textContent = '汇总完成，文件已开始下载。';
+        message.className = 'message success';
+      } catch (error) {
+        message.textContent = error.message;
+        message.className = 'message error';
+      } finally {
+        processBtn.disabled = false;
+        processBtn.classList.remove('loading');
+      }
+    });
+  </script>
+</body>
+</html>
