@@ -93,8 +93,10 @@
       try {
         const response = await fetch('/api/process', { method: 'POST', body });
         if (!response.ok) {
-          const info = await response.json().catch(() => ({}));
-          throw new Error(info.error || '生成失败，请检查文件。');
+          const raw = await response.text();
+          let info = {};
+          try { info = JSON.parse(raw); } catch (_) {}
+          throw new Error(info.error || `服务器处理失败（HTTP ${response.status}），请稍后重试。`);
         }
         const blob = await response.blob();
         const disposition = response.headers.get('content-disposition') || '';

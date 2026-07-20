@@ -4,6 +4,7 @@ import io
 import os
 import re
 from datetime import datetime
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pandas as pd
@@ -22,6 +23,67 @@ OUTPUT_COLUMNS = ["缴费日期按日汇总", "银行存款", "预收报名费",
 
 class InputError(ValueError):
     pass
+
+
+class ExcelHtmlTableParser(HTMLParser):
+    """Small, dependency-free parser for WPS/Excel HTML exports."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.tables = []
+        self._table = None
+        self._row = None
+        self._cell = None
+        self._cell_colspan = 1
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        if tag == "table" and self._table is None:
+            self._table = []
+        elif tag == "tr" and self._table is not None:
+            self._row = []
+        elif tag in ("td", "th") and self._row is not None:
+            self._cell = []
+            attrs = dict(attrs)
+            try:
+                self._cell_colspan = max(1, int(attrs.get("colspan", "1")))
+            except ValueError:
+                self._cell_colspan = 1
+        elif tag == "br" and self._cell is not None:
+            self._cell.append("\n")
+
+    def handle_data(self, data):
+        if self._cell is not None:
+            self._cell.append(data)
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if tag in ("td", "th") and self._cell is not None and self._row is not None:
+            value = "".join(self._cell).strip()
+            self._row.append(value)
+            self._row.extend([""] * (self._cell_colspan - 1))
+            self._cell = None
+            self._cell_colspan = 1
+        elif tag == "tr" and self._row is not None and self._table is not None:
+            if self._row:
+                self._table.append(self._row)
+            self._row = None
+        elif tag == "table" and self._table is not None:
+            if self._table:
+                self.tables.append(self._table)
+            self._table = None
+
+
+def _read_excel_html(content: bytes) -> pd.DataFrame:
+    text = content.decode("utf-8-sig", errors="replace")
+    parser = ExcelHtmlTableParser()
+    parser.feed(text)
+    if not parser.tables:
+        raise InputError("没有在文件中找到数据表。")
+    table = max(parser.tables, key=lambda rows: len(rows) * max((len(r) for r in rows), default=0))
+    width = max(len(row) for row in table)
+    normalized = [row + [""] * (width - len(row)) for row in table]
+    return pd.DataFrame(normalized)
 
 
 def _clean_header(value) -> str:
@@ -82,10 +144,7 @@ def read_uploaded_excel(file_storage) -> pd.DataFrame:
         # Some WPS/ERP exports use an HTML table with an .xls extension.
         prefix = content[:500].lstrip().lower()
         if b"<html" in prefix or b"<table" in prefix:
-            tables = pd.read_html(io.BytesIO(content), header=None)
-            if not tables:
-                raise InputError("没有在文件中找到数据表。")
-            raw = max(tables, key=lambda t: t.shape[0] * t.shape[1])
+            raw = _read_excel_html(content)
         elif filename.endswith(".xlsx") or filename.endswith(".xlsm"):
             raw = pd.read_excel(stream, sheet_name=0, header=None, engine="openpyxl")
         elif filename.endswith(".xls"):
