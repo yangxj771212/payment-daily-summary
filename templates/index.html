@@ -11,7 +11,7 @@
     <section class="hero">
       <div class="eyebrow">EXCEL 自动汇总</div>
       <h1>缴费日期会计汇总</h1>
-      <p>上传缴费明细，系统自动按日计算银行存款、预收报名费、转收入、不含税收入与税额。</p>
+      <p>上传缴费明细，系统先逐笔确认不含税收入与税额，再按缴费日期汇总。</p>
     </section>
 
     <section class="card">
@@ -44,8 +44,8 @@
         <article><span>银行存款</span><p>每日实缴金额合计</p></article>
         <article><span>预收报名费</span><p>“预缴费”类别的每日实缴金额</p></article>
         <article><span>预收报名费转收入</span><p>每日预缴金额合计</p></article>
-        <article><span>收入</span><p>（银行存款－预收报名费＋转收入）÷ 1.03</p></article>
-        <article><span>税</span><p>收入 × 3%</p></article>
+        <article><span>收入</span><p>每笔分别计算并四舍五入到分，再按日汇总</p></article>
+        <article><span>税</span><p>每笔收入 × 3%，四舍五入到分后按日汇总</p></article>
       </div>
       <p class="required">表格必须包含：缴费日期、业务类别、预缴金额、实缴金额。</p>
     </section>

@@ -5,6 +5,7 @@ import os
 import re
 from collections import defaultdict
 from datetime import date, datetime, time
+from decimal import Decimal, ROUND_HALF_UP
 from html.parser import HTMLParser
 
 import xlrd
@@ -183,18 +184,46 @@ def read_uploaded_excel(file_storage) -> list[dict]:
 
 
 def calculate_summary(records: list[dict]) -> list[dict]:
-    daily = defaultdict(lambda: {"银行存款": 0.0, "预收报名费": 0.0, "预收报名费转收入": 0.0})
+    """先逐笔确认收入和税，再按缴费日期汇总。"""
+    daily = defaultdict(lambda: {
+        "银行存款": Decimal("0.00"),
+        "预收报名费": Decimal("0.00"),
+        "预收报名费转收入": Decimal("0.00"),
+        "收入": Decimal("0.00"),
+        "税": Decimal("0.00"),
+    })
+    cent = Decimal("0.01")
     for record in records:
         day = record["缴费日期"].date()
-        daily[day]["银行存款"] += record["实缴金额"]
-        daily[day]["预收报名费转收入"] += record["预缴金额"]
-        if record["业务类别"] == "预缴费":
-            daily[day]["预收报名费"] += record["实缴金额"]
+        bank = Decimal(str(record["实缴金额"])).quantize(cent, rounding=ROUND_HALF_UP)
+        advance = bank if record["业务类别"] == "预缴费" else Decimal("0.00")
+        advance_to_income = Decimal(str(record["预缴金额"])).quantize(cent, rounding=ROUND_HALF_UP)
+
+        # 每一笔单独确认收入并保留到分；该笔税也单独计算并保留到分。
+        income = ((bank - advance + advance_to_income) / Decimal("1.03")).quantize(
+            cent, rounding=ROUND_HALF_UP
+        )
+        tax = (income * Decimal("0.03")).quantize(cent, rounding=ROUND_HALF_UP)
+
+        record.update({
+            "银行存款": float(bank),
+            "预收报名费": float(advance),
+            "预收报名费转收入": float(advance_to_income),
+            "逐笔确认收入": float(income),
+            "逐笔确认税": float(tax),
+        })
+        daily[day]["银行存款"] += bank
+        daily[day]["预收报名费"] += advance
+        daily[day]["预收报名费转收入"] += advance_to_income
+        daily[day]["收入"] += income
+        daily[day]["税"] += tax
     result = []
     for day in sorted(daily):
         values = daily[day]
-        income = (values["银行存款"] - values["预收报名费"] + values["预收报名费转收入"]) / 1.03
-        result.append({"缴费日期按日汇总": day, **values, "收入": income, "税": income * 0.03})
+        result.append({
+            "缴费日期按日汇总": day,
+            **{name: float(amount) for name, amount in values.items()},
+        })
     return result
 
 
@@ -227,7 +256,10 @@ def make_workbook(summary: list[dict], records: list[dict]) -> io.BytesIO:
         ws.column_dimensions[get_column_letter(idx)].width = width
     ws.freeze_panes, ws.auto_filter.ref = "A2", f"A1:F{ws.max_row - 1}"
 
-    detail_headers = ["缴费日期", "业务类别", "预缴金额", "实缴金额"]
+    detail_headers = [
+        "缴费日期", "业务类别", "预缴金额", "实缴金额",
+        "银行存款", "预收报名费", "预收报名费转收入", "逐笔确认收入", "逐笔确认税",
+    ]
     detail.append(detail_headers)
     for cell in detail[1]:
         cell.fill, cell.font, cell.border = header_fill, Font(bold=True), border
@@ -239,7 +271,7 @@ def make_workbook(summary: list[dict], records: list[dict]) -> io.BytesIO:
             cell.border = border
         for cell in row[2:]:
             cell.number_format = "#,##0.00"
-    for i, width in enumerate([20, 16, 18, 18], 1):
+    for i, width in enumerate([20, 16, 18, 18, 17, 18, 23, 18, 16], 1):
         detail.column_dimensions[get_column_letter(i)].width = width
     detail.freeze_panes, detail.auto_filter.ref = "A2", detail.dimensions
     output = io.BytesIO()
