@@ -19,7 +19,7 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
 
 REQUIRED_COLUMNS = ["缴费日期", "业务类别", "预缴金额", "实缴金额"]
-OUTPUT_COLUMNS = ["缴费日期按日汇总", "银行存款", "预收报名费", "预收报名费转收入", "收入", "税"]
+OUTPUT_COLUMNS = ["缴费日期按日汇总", "银行存款", "预收报名费", "预收报名费转收入", "收入", "不含税收入", "税"]
 
 
 class InputError(ValueError):
@@ -184,12 +184,13 @@ def read_uploaded_excel(file_storage) -> list[dict]:
 
 
 def calculate_summary(records: list[dict]) -> list[dict]:
-    """先逐笔确认收入和税，再按缴费日期汇总。"""
+    """先逐笔确认收入、不含税收入和税，再按缴费日期汇总。"""
     daily = defaultdict(lambda: {
         "银行存款": Decimal("0.00"),
         "预收报名费": Decimal("0.00"),
         "预收报名费转收入": Decimal("0.00"),
         "收入": Decimal("0.00"),
+        "不含税收入": Decimal("0.00"),
         "税": Decimal("0.00"),
     })
     cent = Decimal("0.01")
@@ -199,23 +200,28 @@ def calculate_summary(records: list[dict]) -> list[dict]:
         advance = bank if record["业务类别"] == "预缴费" else Decimal("0.00")
         advance_to_income = Decimal(str(record["预缴金额"])).quantize(cent, rounding=ROUND_HALF_UP)
 
-        # 每一笔单独确认收入并保留到分；该笔税也单独计算并保留到分。
-        income = ((bank - advance + advance_to_income) / Decimal("1.03")).quantize(
+        # 每一笔先确认含税收入，再分别计算不含税收入和税额，均保留到分。
+        income = (bank - advance + advance_to_income).quantize(
             cent, rounding=ROUND_HALF_UP
         )
-        tax = (income * Decimal("0.03")).quantize(cent, rounding=ROUND_HALF_UP)
+        income_excluding_tax = (income / Decimal("1.03")).quantize(
+            cent, rounding=ROUND_HALF_UP
+        )
+        tax = (income - income_excluding_tax).quantize(cent, rounding=ROUND_HALF_UP)
 
         record.update({
             "银行存款": float(bank),
             "预收报名费": float(advance),
             "预收报名费转收入": float(advance_to_income),
             "逐笔确认收入": float(income),
+            "逐笔确认不含税收入": float(income_excluding_tax),
             "逐笔确认税": float(tax),
         })
         daily[day]["银行存款"] += bank
         daily[day]["预收报名费"] += advance
         daily[day]["预收报名费转收入"] += advance_to_income
         daily[day]["收入"] += income
+        daily[day]["不含税收入"] += income_excluding_tax
         daily[day]["税"] += tax
     result = []
     for day in sorted(daily):
@@ -243,7 +249,7 @@ def make_workbook(summary: list[dict], records: list[dict]) -> io.BytesIO:
         ws.append([item[c] for c in OUTPUT_COLUMNS])
     total_row = ws.max_row + 1
     ws.cell(total_row, 1, "合计")
-    for col in range(2, 7):
+    for col in range(2, len(OUTPUT_COLUMNS) + 1):
         letter = get_column_letter(col)
         ws.cell(total_row, col, f"=SUM({letter}2:{letter}{total_row - 1})")
     for cell in ws[total_row]:
@@ -252,13 +258,14 @@ def make_workbook(summary: list[dict], records: list[dict]) -> io.BytesIO:
         row[0].number_format = "yyyy-mm-dd"
         for cell in row[1:]:
             cell.number_format, cell.border = "#,##0.00", border
-    for idx, width in enumerate([22, 17, 18, 23, 17, 15], 1):
+    for idx, width in enumerate([22, 17, 18, 23, 17, 18, 15], 1):
         ws.column_dimensions[get_column_letter(idx)].width = width
-    ws.freeze_panes, ws.auto_filter.ref = "A2", f"A1:F{ws.max_row - 1}"
+    ws.freeze_panes, ws.auto_filter.ref = "A2", f"A1:{get_column_letter(len(OUTPUT_COLUMNS))}{ws.max_row - 1}"
 
     detail_headers = [
         "缴费日期", "业务类别", "预缴金额", "实缴金额",
-        "银行存款", "预收报名费", "预收报名费转收入", "逐笔确认收入", "逐笔确认税",
+        "银行存款", "预收报名费", "预收报名费转收入", "逐笔确认收入",
+        "逐笔确认不含税收入", "逐笔确认税",
     ]
     detail.append(detail_headers)
     for cell in detail[1]:
@@ -271,7 +278,7 @@ def make_workbook(summary: list[dict], records: list[dict]) -> io.BytesIO:
             cell.border = border
         for cell in row[2:]:
             cell.number_format = "#,##0.00"
-    for i, width in enumerate([20, 16, 18, 18, 17, 18, 23, 18, 16], 1):
+    for i, width in enumerate([20, 16, 18, 18, 17, 18, 23, 18, 23, 16], 1):
         detail.column_dimensions[get_column_letter(i)].width = width
     detail.freeze_panes, detail.auto_filter.ref = "A2", detail.dimensions
     output = io.BytesIO()
